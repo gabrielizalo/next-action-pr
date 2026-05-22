@@ -43,6 +43,7 @@ Next Action PR is designed to make that answer visible quickly.
 ## Documentation
 
 - [01 - Project Plan](./docs/01-project-plan.md)
+- [02 - Implementation Plan](./docs/02-implementation-plan.md)
 
 ---
 
