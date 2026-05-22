@@ -406,30 +406,34 @@ Define the internal Pull Request model.
 ```
 Add the initial TypeScript types for the Next Action PR project.
 
-Create src/types.ts with:
-- PullRequestReviewDecision
-- PullRequestMergeState
-- PullRequestCategory
-- PullRequestItem
-- ClassifiedPullRequest
+Create src/types.ts with explicit literal union types:
+
+- PullRequestReviewDecision = 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null
+- PullRequestMergeState = 'CLEAN' | 'DIRTY' | 'BEHIND' | 'BLOCKED' | 'UNKNOWN'
+- PullRequestChecksStatus = 'SUCCESS' | 'FAILURE' | 'PENDING'
+- PullRequestCategory = 'READY_TO_MERGE' | 'WAITING_FOR_REVIEW' | 'WAITING_FOR_DEVELOPER' | 'OLD' | 'UNKNOWN'
+- NextActionOwner = 'Merger' | 'Reviewer' | 'Developer' | 'Team Lead / PR Owner' | 'Unknown'
 
 The PullRequestItem should include:
-- number
-- title
-- url
-- author
-- createdAt
-- updatedAt
-- isDraft
-- reviewDecision
-- mergeStateStatus
-- requestedReviewers
-- checksStatus
+- number: number
+- title: string
+- url: string
+- author: string
+- createdAt: string (ISO date)
+- updatedAt: string (ISO date)
+- isDraft: boolean
+- reviewDecision: PullRequestReviewDecision
+- mergeStateStatus: PullRequestMergeState
+- requestedReviewers: string[]
+- checksStatus: PullRequestChecksStatus
 
 The ClassifiedPullRequest should extend PullRequestItem and include:
-- category
-- reason
-- nextActionOwner
+- category: PullRequestCategory
+- reason: string
+- nextActionOwner: NextActionOwner
+- isStale: boolean
+- underlyingCategory: PullRequestCategory (the category before any OLD/staleness overlay)
+- underlyingReason: string (the reason before any OLD/staleness overlay)
 
 Do not implement any logic yet.
 ```
@@ -462,10 +466,17 @@ Include at least 10 PRs covering these scenarios:
 - failing checks
 - branch behind
 - draft PR
-- old PR over 60 days
+- old PR over 60 days (createdAt older than 60 days)
 - inactive PR with no updates for over 15 days
 
-Use realistic titles and authors.
+Note: inactivity (stale updatedAt) does NOT drive classification. It only
+affects the "Last Update" column in the report. An inactive PR still falls
+into a normal category via the Step 4 rules. Make the inactive-PR mock also
+satisfy one of the other scenarios so it classifies cleanly.
+
+Use realistic titles and authors. All createdAt/updatedAt values must be
+fixed ISO date strings (not computed from the current date) so tests stay
+deterministic.
 Do not connect to GitHub yet.
 ```
 
@@ -504,25 +515,43 @@ Implement the Pull Request classifier.
 
 Create src/classifier/classifyPullRequest.ts.
 
-It should export a function classifyPullRequest(pr: PullRequestItem, options?: { staleDays?: number }): ClassifiedPullRequest.
+It should export a pure function:
 
-Rules:
-- If the PR was created more than staleDays ago, category should be OLD, reason "Open for more than {staleDays} days", nextActionOwner "Team Lead / PR Owner".
-- If the PR is draft, category should be WAITING_FOR_DEVELOPER, reason "Draft PR".
-- If reviewDecision is APPROVED and mergeStateStatus is CLEAN and checksStatus is SUCCESS, category should be READY_TO_MERGE.
-- If reviewDecision is CHANGES_REQUESTED, category should be WAITING_FOR_DEVELOPER, reason "Changes requested".
-- If checksStatus is FAILURE, category should be WAITING_FOR_DEVELOPER, reason "Checks failing".
-- If mergeStateStatus is DIRTY, category should be WAITING_FOR_DEVELOPER, reason "Merge conflicts".
-- If mergeStateStatus is BEHIND, category should be WAITING_FOR_DEVELOPER, reason "Branch behind".
-- If reviewDecision is REVIEW_REQUIRED, category should be WAITING_FOR_REVIEW.
-- Include nextActionOwner as:
-  - "Merger" for READY_TO_MERGE
-  - "Reviewer" for WAITING_FOR_REVIEW
-  - "Developer" for WAITING_FOR_DEVELOPER
-  - "Team Lead / PR Owner" for OLD
-  - "Unknown" otherwise
+classifyPullRequest(
+  pr: PullRequestItem,
+  options?: { staleDays?: number; now?: Date }
+): ClassifiedPullRequest
 
-Keep the function pure and easy to test.
+Defaults: staleDays = 60, now = new Date(). The function must never read
+the clock except through options.now (inject it for deterministic tests).
+
+Step 1 — compute the BASE category and reason (first matching rule wins,
+in this exact order):
+- isDraft true → WAITING_FOR_DEVELOPER, reason "Draft PR".
+- reviewDecision === 'CHANGES_REQUESTED' → WAITING_FOR_DEVELOPER, reason "Changes requested".
+- checksStatus === 'FAILURE' → WAITING_FOR_DEVELOPER, reason "Checks failing".
+- mergeStateStatus === 'DIRTY' → WAITING_FOR_DEVELOPER, reason "Merge conflicts".
+- mergeStateStatus === 'BEHIND' → WAITING_FOR_DEVELOPER, reason "Branch behind".
+- reviewDecision === 'APPROVED' && mergeStateStatus === 'CLEAN' && checksStatus === 'SUCCESS' → READY_TO_MERGE, reason "Ready to merge".
+- reviewDecision === 'REVIEW_REQUIRED' → WAITING_FOR_REVIEW, reason "Waiting for review".
+- No rule matched → UNKNOWN, reason "Unable to classify".
+
+Set underlyingCategory and underlyingReason to this base result.
+
+Step 2 — staleness overlay:
+- Compute age in days = floor((now - createdAt) / 1 day).
+- isStale = age > staleDays.
+- If isStale: category = OLD, reason = "Open for more than {staleDays} days".
+  Otherwise: category = underlyingCategory, reason = underlyingReason.
+
+Step 3 — nextActionOwner derived from the FINAL category:
+- READY_TO_MERGE → "Merger"
+- WAITING_FOR_REVIEW → "Reviewer"
+- WAITING_FOR_DEVELOPER → "Developer"
+- OLD → "Team Lead / PR Owner"
+- UNKNOWN → "Unknown"
+
+Keep the function pure and easy to test. No I/O, no Date.now() outside options.
 ```
 
 #### Manual Validation
@@ -557,12 +586,21 @@ Create a Markdown report generator.
 
 Create src/report/generateMarkdownReport.ts.
 
-It should export generateMarkdownReport(items: ClassifiedPullRequest[], options?: { projectName?: string }): string.
+It should export:
+
+generateMarkdownReport(
+  items: ClassifiedPullRequest[],
+  options?: { projectName?: string; now?: Date }
+): string
+
+Defaults: projectName = "Next Action PR", now = new Date(). Use options.now
+for the "Generated" timestamp and all age / last-updated calculations so the
+output is deterministic in tests.
 
 The report should include:
 - Title: "{projectName} Pull Request Health Report"
-- Generated timestamp
-- Summary table
+- Generated timestamp (from options.now, format YYYY-MM-DD HH:mm)
+- Summary table (count per category, using the FINAL category)
 - Ready to Merge table
 - Waiting for Review table
 - Waiting for Developer table
@@ -573,9 +611,13 @@ Each PR row should include:
 - PR number as a Markdown link
 - title
 - author
-- age in days
-- last updated in days
+- age in days (now - createdAt)
+- last updated in days (now - updatedAt)
 - reason when applicable
+
+The Old PRs table must include a "Current Status" column rendered from
+underlyingCategory (the pre-staleness category), and a "Reason" column from
+the final reason. Bucket each PR by its FINAL category.
 
 Make sure the Markdown tables are Confluence-friendly.
 ```

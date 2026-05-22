@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/next-action-pr-header.png" alt="Next Action PR by Gabo" width="100%" />
+  <img src="./assets/next-action-pr-header.png" alt="Next Action PR by Gabo" width="830" />
 </p>
 
 <h1 align="center">Next Action PR</h1>
@@ -37,6 +37,12 @@ GitHub already shows Pull Requests, but teams often still need a simple shared r
 > Who needs to do something next?
 
 Next Action PR is designed to make that answer visible quickly.
+
+---
+
+## Documentation
+
+- [01 - Project Plan](./docs/01-project-plan.md)
 
 ---
 
